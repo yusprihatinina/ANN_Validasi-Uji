@@ -1,0 +1,693 @@
+clc; clear;
+
+%% 1. Baca Data
+data_kejadian = readtable('Latih.xlsx', 'VariableNamingRule', 'preserve');
+data_intensitas = readtable('LatihHujan.xlsx', 'VariableNamingRule', 'preserve');
+
+% Konversi kolom Jam ke numerik
+data_kejadian.Jam = str2double(data_kejadian.Jam);
+data_intensitas.Jam = str2double(data_intensitas.Jam);
+
+fprintf('📊 Data awal:\n');
+fprintf('   - Data kejadian: %d baris\n', height(data_kejadian));
+fprintf('   - Data intensitas: %d baris\n', height(data_intensitas));
+
+%% 2. Definisi Fitur
+fitur_kejadian = {'SI','LI','KI','TT','CAPE','CIN','PW'};
+fitur_intensitas = {'CAPE','CIN','PW'};
+
+% Ambil semua fitur unik dari keduanya untuk normalisasi global
+fitur_all = unique([fitur_kejadian fitur_intensitas]);
+
+% Hitung nilai min dan max dari fitur tersebut (menggunakan data kejadian)
+min_all = min(data_kejadian{:, fitur_all});
+max_all = max(data_kejadian{:, fitur_all});
+
+% Buat fungsi normalisasi skala [-1, 1]
+normalize = @(x, f) 2*((x - min_all(f)) ./ (max_all(f) - min_all(f))) - 1;
+
+% Normalisasi masing-masing data sesuai indeks fitur
+[~, idx_kejadian] = ismember(fitur_kejadian, fitur_all);
+[~, idx_intensitas] = ismember(fitur_intensitas, fitur_all);
+
+data_kejadian{:, fitur_kejadian} = normalize(data_kejadian{:, fitur_kejadian}, idx_kejadian);
+data_intensitas{:, fitur_intensitas} = normalize(data_intensitas{:, fitur_intensitas}, idx_intensitas);
+
+%% 3. Bagi Data Pagi dan Malam
+data_pagi_kejadian = data_kejadian(data_kejadian.Jam == 0, :);
+data_malam_kejadian = data_kejadian(data_kejadian.Jam == 12, :);
+data_pagi_intensitas = data_intensitas(data_intensitas.Jam == 0, :);
+data_malam_intensitas = data_intensitas(data_intensitas.Jam == 12, :);
+
+%% 4. Analisis Distribusi Kelas Sebelum SMOTE
+fprintf('\n========== DISTRIBUSI KELAS SEBELUM SMOTE ==========\n');
+
+% Kejadian Pagi
+fprintf('\nKEJADIAN PAGI:\n');
+[unique_pagi_kej, ~, idx_pagi_kej] = unique(data_pagi_kejadian.Hujan);
+counts_pagi_kej = accumarray(idx_pagi_kej, 1);
+for i = 1:length(unique_pagi_kej)
+    fprintf('  Kelas %d: %d sampel (%.1f%%)\n', unique_pagi_kej(i), counts_pagi_kej(i), ...
+            counts_pagi_kej(i)/sum(counts_pagi_kej)*100);
+end
+
+% Kejadian Malam
+fprintf('\nKEJADIAN MALAM:\n');
+[unique_malam_kej, ~, idx_malam_kej] = unique(data_malam_kejadian.Hujan);
+counts_malam_kej = accumarray(idx_malam_kej, 1);
+for i = 1:length(unique_malam_kej)
+    fprintf('  Kelas %d: %d sampel (%.1f%%)\n', unique_malam_kej(i), counts_malam_kej(i), ...
+            counts_malam_kej(i)/sum(counts_malam_kej)*100);
+end
+
+% Intensitas Pagi
+fprintf('\nINTENSITAS PAGI:\n');
+[unique_pagi_int, ~, idx_pagi_int] = unique(data_pagi_intensitas.IntensitasHujan);
+counts_pagi_int = accumarray(idx_pagi_int, 1);
+for i = 1:length(unique_pagi_int)
+    fprintf('  Kelas %d: %d sampel (%.1f%%)\n', unique_pagi_int(i), counts_pagi_int(i), ...
+            counts_pagi_int(i)/sum(counts_pagi_int)*100);
+end
+
+% Intensitas Malam
+fprintf('\nINTENSITAS MALAM:\n');
+[unique_malam_int, ~, idx_malam_int] = unique(data_malam_intensitas.IntensitasHujan);
+counts_malam_int = accumarray(idx_malam_int, 1);
+for i = 1:length(unique_malam_int)
+    fprintf('  Kelas %d: %d sampel (%.1f%%)\n', unique_malam_int(i), counts_malam_int(i), ...
+            counts_malam_int(i)/sum(counts_malam_int)*100);
+end
+
+%% 5. Terapkan SMOTE
+fprintf('\n========== MENERAPKAN SMOTE ==========\n');
+
+% Parameter SMOTE
+N = 100;  % 100% oversampling (sampai menyamai kelas mayoritas)
+k = 5;    % 5 tetangga terdekat
+
+% SMOTE untuk Kejadian Pagi
+fprintf('\n🔄 SMOTE Kejadian Pagi...\n');
+X_pagi_kej = data_pagi_kejadian{:, fitur_kejadian};
+y_pagi_kej = data_pagi_kejadian.Hujan;
+[X_pagi_kej_smote, y_pagi_kej_smote] = SMOTE(X_pagi_kej, y_pagi_kej, N, k);
+
+% SMOTE untuk Kejadian Malam
+fprintf('🔄 SMOTE Kejadian Malam...\n');
+X_malam_kej = data_malam_kejadian{:, fitur_kejadian};
+y_malam_kej = data_malam_kejadian.Hujan;
+[X_malam_kej_smote, y_malam_kej_smote] = SMOTE(X_malam_kej, y_malam_kej, N, k);
+
+% SMOTE untuk Intensitas Pagi (kecuali kelas NoRA jika ada)
+fprintf('🔄 SMOTE Intensitas Pagi...\n');
+X_pagi_int = data_pagi_intensitas{:, fitur_intensitas};
+y_pagi_int = data_pagi_intensitas.IntensitasHujan;
+% Jika ada kelas 4 (NoRA), kecualikan dari SMOTE
+exclude_class_pagi = NaN;
+if any(y_pagi_int == 4)
+    exclude_class_pagi = 4;
+end
+[X_pagi_int_smote, y_pagi_int_smote] = SMOTE(X_pagi_int, y_pagi_int, N, k, exclude_class_pagi);
+
+% SMOTE untuk Intensitas Malam
+fprintf('🔄 SMOTE Intensitas Malam...\n');
+X_malam_int = data_malam_intensitas{:, fitur_intensitas};
+y_malam_int = data_malam_intensitas.IntensitasHujan;
+exclude_class_malam = NaN;
+if any(y_malam_int == 4)
+    exclude_class_malam = 4;
+end
+[X_malam_int_smote, y_malam_int_smote] = SMOTE(X_malam_int, y_malam_int, N, k, exclude_class_malam);
+
+%% 6. Analisis Distribusi Kelas Setelah SMOTE
+fprintf('\n========== DISTRIBUSI KELAS SETELAH SMOTE ==========\n');
+
+% Kejadian Pagi
+fprintf('\nKEJADIAN PAGI:\n');
+[unique_pagi_kej_smote, ~, idx_pagi_kej_smote] = unique(y_pagi_kej_smote);
+counts_pagi_kej_smote = accumarray(idx_pagi_kej_smote, 1);
+for i = 1:length(unique_pagi_kej_smote)
+    fprintf('  Kelas %d: %d sampel (%.1f%%) [+%d]\n', unique_pagi_kej_smote(i), counts_pagi_kej_smote(i), ...
+            counts_pagi_kej_smote(i)/sum(counts_pagi_kej_smote)*100, ...
+            counts_pagi_kej_smote(i) - counts_pagi_kej(unique_pagi_kej == unique_pagi_kej_smote(i)));
+end
+
+% Kejadian Malam
+fprintf('\nKEJADIAN MALAM:\n');
+[unique_malam_kej_smote, ~, idx_malam_kej_smote] = unique(y_malam_kej_smote);
+counts_malam_kej_smote = accumarray(idx_malam_kej_smote, 1);
+for i = 1:length(unique_malam_kej_smote)
+    fprintf('  Kelas %d: %d sampel (%.1f%%) [+%d]\n', unique_malam_kej_smote(i), counts_malam_kej_smote(i), ...
+            counts_malam_kej_smote(i)/sum(counts_malam_kej_smote)*100, ...
+            counts_malam_kej_smote(i) - counts_malam_kej(unique_malam_kej == unique_malam_kej_smote(i)));
+end
+
+% Intensitas Pagi
+fprintf('\nINTENSITAS PAGI:\n');
+[unique_pagi_int_smote, ~, idx_pagi_int_smote] = unique(y_pagi_int_smote);
+counts_pagi_int_smote = accumarray(idx_pagi_int_smote, 1);
+for i = 1:length(unique_pagi_int_smote)
+    orig_count = 0;
+    if any(unique_pagi_int == unique_pagi_int_smote(i))
+        orig_count = counts_pagi_int(unique_pagi_int == unique_pagi_int_smote(i));
+    end
+    fprintf('  Kelas %d: %d sampel (%.1f%%) [+%d]\n', unique_pagi_int_smote(i), counts_pagi_int_smote(i), ...
+            counts_pagi_int_smote(i)/sum(counts_pagi_int_smote)*100, ...
+            counts_pagi_int_smote(i) - orig_count);
+end
+
+% Intensitas Malam
+fprintf('\nINTENSITAS MALAM:\n');
+[unique_malam_int_smote, ~, idx_malam_int_smote] = unique(y_malam_int_smote);
+counts_malam_int_smote = accumarray(idx_malam_int_smote, 1);
+for i = 1:length(unique_malam_int_smote)
+    orig_count = 0;
+    if any(unique_malam_int == unique_malam_int_smote(i))
+        orig_count = counts_malam_int(unique_malam_int == unique_malam_int_smote(i));
+    end
+    fprintf('  Kelas %d: %d sampel (%.1f%%) [+%d]\n', unique_malam_int_smote(i), counts_malam_int_smote(i), ...
+            counts_malam_int_smote(i)/sum(counts_malam_int_smote)*100, ...
+            counts_malam_int_smote(i) - orig_count);
+end
+
+%% 7. Latih Model ANN dengan Data SMOTE (Grid Search)
+fprintf('\n========== TRAINING MODEL DENGAN SMOTE ==========\n');
+
+fprintf('\n[KEJADIAN - PAGI] dengan SMOTE\n');
+[net1_pagi, acc1_pagi] = gridsearch_kejadian_smote(X_pagi_kej_smote, y_pagi_kej_smote);
+
+fprintf('\n[KEJADIAN - MALAM] dengan SMOTE\n');
+[net1_malam, acc1_malam] = gridsearch_kejadian_smote(X_malam_kej_smote, y_malam_kej_smote);
+
+fprintf('\n[INTENSITAS - PAGI] dengan SMOTE\n');
+[net2_pagi, acc2_pagi] = gridsearch_intensitas_smote(X_pagi_int_smote, y_pagi_int_smote);
+
+fprintf('\n[INTENSITAS - MALAM] dengan SMOTE\n');
+[net2_malam, acc2_malam] = gridsearch_intensitas_smote(X_malam_int_smote, y_malam_int_smote);
+
+%% 8. Perbandingan dengan Model Tanpa SMOTE
+fprintf('\n========== PERBANDINGAN DENGAN/TANPA SMOTE ==========\n');
+
+% Latih model tanpa SMOTE untuk perbandingan
+fprintf('\n[BASELINE - TANPA SMOTE]\n');
+fprintf('Kejadian Pagi (tanpa SMOTE)...\n');
+[net1_pagi_baseline, acc1_pagi_baseline] = gridsearch_kejadian(data_pagi_kejadian, fitur_kejadian);
+
+fprintf('Kejadian Malam (tanpa SMOTE)...\n');
+[net1_malam_baseline, acc1_malam_baseline] = gridsearch_kejadian(data_malam_kejadian, fitur_kejadian);
+
+fprintf('Intensitas Pagi (tanpa SMOTE)...\n');
+[net2_pagi_baseline, acc2_pagi_baseline] = gridsearch_intensitas(data_pagi_intensitas, fitur_intensitas);
+
+fprintf('Intensitas Malam (tanpa SMOTE)...\n');
+[net2_malam_baseline, acc2_malam_baseline] = gridsearch_intensitas(data_malam_intensitas, fitur_intensitas);
+
+% Tampilkan perbandingan
+fprintf('\n📊 PERBANDINGAN AKURASI:\n');
+fprintf('=====================================\n');
+fprintf('MODEL                    TANPA SMOTE  DENGAN SMOTE  PENINGKATAN\n');
+fprintf('---------------------------------------------------------------\n');
+fprintf('Kejadian Pagi           %.2f%%        %.2f%%         %+.2f%%\n', ...
+        acc1_pagi_baseline*100, acc1_pagi*100, (acc1_pagi-acc1_pagi_baseline)*100);
+fprintf('Kejadian Malam          %.2f%%        %.2f%%         %+.2f%%\n', ...
+        acc1_malam_baseline*100, acc1_malam*100, (acc1_malam-acc1_malam_baseline)*100);
+fprintf('Intensitas Pagi         %.2f%%        %.2f%%         %+.2f%%\n', ...
+        acc2_pagi_baseline*100, acc2_pagi*100, (acc2_pagi-acc2_pagi_baseline)*100);
+fprintf('Intensitas Malam        %.2f%%        %.2f%%         %+.2f%%\n', ...
+        acc2_malam_baseline*100, acc2_malam*100, (acc2_malam-acc2_malam_baseline)*100);
+fprintf('---------------------------------------------------------------\n');
+
+% Hitung rata-rata peningkatan
+avg_improvement = mean([(acc1_pagi-acc1_pagi_baseline), (acc1_malam-acc1_malam_baseline), ...
+                       (acc2_pagi-acc2_pagi_baseline), (acc2_malam-acc2_malam_baseline)]) * 100;
+fprintf('Rata-rata Peningkatan:  %+.2f%%\n', avg_improvement);
+
+%% 9. Visualisasi Distribusi Kelas (DIPERBAIKI)
+figure('Name', 'Perbandingan Distribusi Kelas', 'Position', [100, 100, 1400, 800]);
+
+% Definisi warna yang valid
+color_before = [0.7, 0.9, 1.0];    % Light blue (RGB)
+color_after = [0.7, 1.0, 0.7];     % Light green (RGB)
+color_intensity_before = [1.0, 0.7, 0.7];  % Light coral (RGB)
+
+% Subplot 1: Kejadian Pagi
+subplot(2,4,1);
+bar(unique_pagi_kej, counts_pagi_kej, 'FaceColor', color_before, 'EdgeColor', 'black');
+title('Kejadian Pagi - Sebelum SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_pagi_kej)
+    text(unique_pagi_kej(i), counts_pagi_kej(i)+5, num2str(counts_pagi_kej(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+subplot(2,4,2);
+bar(unique_pagi_kej_smote, counts_pagi_kej_smote, 'FaceColor', color_after, 'EdgeColor', 'black');
+title('Kejadian Pagi - Setelah SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_pagi_kej_smote)
+    text(unique_pagi_kej_smote(i), counts_pagi_kej_smote(i)+5, num2str(counts_pagi_kej_smote(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+% Subplot 2: Kejadian Malam
+subplot(2,4,3);
+bar(unique_malam_kej, counts_malam_kej, 'FaceColor', color_before, 'EdgeColor', 'black');
+title('Kejadian Malam - Sebelum SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_malam_kej)
+    text(unique_malam_kej(i), counts_malam_kej(i)+5, num2str(counts_malam_kej(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+subplot(2,4,4);
+bar(unique_malam_kej_smote, counts_malam_kej_smote, 'FaceColor', color_after, 'EdgeColor', 'black');
+title('Kejadian Malam - Setelah SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_malam_kej_smote)
+    text(unique_malam_kej_smote(i), counts_malam_kej_smote(i)+5, num2str(counts_malam_kej_smote(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+% Subplot 3: Intensitas Pagi
+subplot(2,4,5);
+bar(unique_pagi_int, counts_pagi_int, 'FaceColor', color_intensity_before, 'EdgeColor', 'black');
+title('Intensitas Pagi - Sebelum SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_pagi_int)
+    text(unique_pagi_int(i), counts_pagi_int(i)+2, num2str(counts_pagi_int(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+subplot(2,4,6);
+bar(unique_pagi_int_smote, counts_pagi_int_smote, 'FaceColor', color_after, 'EdgeColor', 'black');
+title('Intensitas Pagi - Setelah SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_pagi_int_smote)
+    text(unique_pagi_int_smote(i), counts_pagi_int_smote(i)+2, num2str(counts_pagi_int_smote(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+% Subplot 4: Intensitas Malam
+subplot(2,4,7);
+bar(unique_malam_int, counts_malam_int, 'FaceColor', color_intensity_before, 'EdgeColor', 'black');
+title('Intensitas Malam - Sebelum SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_malam_int)
+    text(unique_malam_int(i), counts_malam_int(i)+2, num2str(counts_malam_int(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+subplot(2,4,8);
+bar(unique_malam_int_smote, counts_malam_int_smote, 'FaceColor', color_after, 'EdgeColor', 'black');
+title('Intensitas Malam - Setelah SMOTE');
+xlabel('Kelas');
+ylabel('Jumlah Sampel');
+grid on;
+for i = 1:length(unique_malam_int_smote)
+    text(unique_malam_int_smote(i), counts_malam_int_smote(i)+2, num2str(counts_malam_int_smote(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+end
+
+%% 10. Visualisasi Perbandingan Akurasi (DIPERBAIKI)
+figure('Name', 'Perbandingan Akurasi', 'Position', [200, 200, 800, 600]);
+
+models = {'Kejadian\nPagi', 'Kejadian\nMalam', 'Intensitas\nPagi', 'Intensitas\nMalam'};
+acc_baseline = [acc1_pagi_baseline, acc1_malam_baseline, acc2_pagi_baseline, acc2_malam_baseline] * 100;
+acc_smote = [acc1_pagi, acc1_malam, acc2_pagi, acc2_malam] * 100;
+
+x = 1:length(models);
+width = 0.35;
+
+% Gunakan warna RGB yang valid
+color_baseline = [0.7, 0.9, 1.0];  % Light blue
+color_smote = [0.7, 1.0, 0.7];     % Light green
+
+bar(x - width/2, acc_baseline, width, 'FaceColor', color_baseline, 'EdgeColor', 'black', 'FaceAlpha', 0.8);
+hold on;
+bar(x + width/2, acc_smote, width, 'FaceColor', color_smote, 'EdgeColor', 'black', 'FaceAlpha', 0.8);
+
+xlabel('Model');
+ylabel('Akurasi (%)');
+title('Perbandingan Akurasi: Tanpa SMOTE vs Dengan SMOTE');
+xticks(x);
+xticklabels(models);
+legend('Tanpa SMOTE', 'Dengan SMOTE', 'Location', 'best');
+grid on;
+
+% Tambahkan nilai akurasi di atas bar
+for i = 1:length(models)
+    text(i - width/2, acc_baseline(i) + 1, sprintf('%.1f%%', acc_baseline(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+    text(i + width/2, acc_smote(i) + 1, sprintf('%.1f%%', acc_smote(i)), ...
+         'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+    
+    % Tambahkan teks peningkatan
+    if acc_smote(i) > acc_baseline(i)
+        improvement = acc_smote(i) - acc_baseline(i);
+        text(i, max(acc_baseline(i), acc_smote(i)) + 3, sprintf('+%.1f%%', improvement), ...
+             'HorizontalAlignment', 'center', 'FontWeight', 'bold', 'Color', 'red');
+    end
+end
+
+% Set y-axis limit untuk memberikan ruang untuk teks
+ylim([0, max([acc_baseline, acc_smote]) + 10]);
+
+
+% %% 10. Visualisasi Perbandingan Akurasi
+% figure('Name', 'Perbandingan Akurasi', 'Position', [200, 200, 800, 600]);
+% 
+% models = {'Kejadian\nPagi', 'Kejadian\nMalam', 'Intensitas\nPagi', 'Intensitas\nMalam'};
+% acc_baseline = [acc1_pagi_baseline, acc1_malam_baseline, acc2_pagi_baseline, acc2_malam_baseline] * 100;
+% acc_smote = [acc1_pagi, acc1_malam, acc2_pagi, acc2_malam] * 100;
+% 
+% x = 1:length(models);
+% width = 0.35;
+% 
+% bar(x - width/2, acc_baseline, width, 'FaceColor', 'blue', 'EdgeColor', 'black', 'FaceAlpha', 0.8);
+% hold on;
+% bar(x + width/2, acc_smote, width, 'FaceColor', 'green', 'EdgeColor', 'black', 'FaceAlpha', 0.8);
+% 
+% xlabel('Model');
+% ylabel('Akurasi (%)');
+% title('Perbandingan Akurasi: Tanpa SMOTE vs Dengan SMOTE');
+% xticks(x);
+% xticklabels(models);
+% legend('Tanpa SMOTE', 'Dengan SMOTE', 'Location', 'best');
+% grid on;
+% 
+% % Tambahkan nilai akurasi di atas bar
+% for i = 1:length(models)
+%     text(i - width/2, acc_baseline(i) + 1, sprintf('%.1f%%', acc_baseline(i)), ...
+%          'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+%     text(i + width/2, acc_smote(i) + 1, sprintf('%.1f%%', acc_smote(i)), ...
+%          'HorizontalAlignment', 'center', 'FontWeight', 'bold');
+%     
+%     % Tambahkan panah peningkatan
+%     if acc_smote(i) > acc_baseline(i)
+%         annotation('arrow', [i/length(models)-0.05, i/length(models)+0.05], ...
+%                   [0.3, 0.4], 'Color', 'red', 'LineWidth', 2);
+%     end
+% end
+
+%% 11. Simpan Model dan Data SMOTE
+fprintf('\n========== MENYIMPAN MODEL DAN DATA ==========\n');
+
+% Simpan model dengan SMOTE
+save('model_kejadian_pagi.mat', 'net1_pagi');
+save('model_kejadian_malam.mat', 'net1_malam');
+save('model_intensitas_pagi.mat', 'net2_pagi');
+save('model_intensitas_malam.mat', 'net2_malam');
+
+% Simpan model baseline (tanpa SMOTE)
+save('model_kejadian_pagi_baseline.mat', 'net1_pagi_baseline');
+save('model_kejadian_malam_baseline.mat', 'net1_malam_baseline');
+save('model_intensitas_pagi_baseline.mat', 'net2_pagi_baseline');
+save('model_intensitas_malam_baseline.mat', 'net2_malam_baseline');
+
+% Simpan data SMOTE untuk analisis lebih lanjut
+save('data_smote.mat', 'X_pagi_kej_smote', 'y_pagi_kej_smote', ...
+     'X_malam_kej_smote', 'y_malam_kej_smote', ...
+     'X_pagi_int_smote', 'y_pagi_int_smote', ...
+     'X_malam_int_smote', 'y_malam_int_smote');
+
+% Simpan informasi normalisasi
+save('normalisasi_info_smote.mat', 'min_all', 'max_all', 'fitur_all', ...
+     'fitur_kejadian', 'fitur_intensitas');
+
+% Simpan hasil perbandingan
+comparison_results = struct();
+comparison_results.baseline = struct('kejadian_pagi', acc1_pagi_baseline, ...
+                                   'kejadian_malam', acc1_malam_baseline, ...
+                                   'intensitas_pagi', acc2_pagi_baseline, ...
+                                   'intensitas_malam', acc2_malam_baseline);
+comparison_results.smote = struct('kejadian_pagi', acc1_pagi, ...
+                                'kejadian_malam', acc1_malam, ...
+                                'intensitas_pagi', acc2_pagi, ...
+                                'intensitas_malam', acc2_malam);
+comparison_results.improvement = struct('kejadian_pagi', (acc1_pagi-acc1_pagi_baseline)*100, ...
+                                      'kejadian_malam', (acc1_malam-acc1_malam_baseline)*100, ...
+                                      'intensitas_pagi', (acc2_pagi-acc2_pagi_baseline)*100, ...
+                                      'intensitas_malam', (acc2_malam-acc2_malam_baseline)*100);
+comparison_results.avg_improvement = avg_improvement;
+
+save('comparison_results.mat', 'comparison_results');
+
+%% 12. Buat Laporan Excel
+fprintf('📄 Membuat laporan Excel...\n');
+
+% Tabel perbandingan akurasi
+comparison_table = table();
+comparison_table.Model = {'Kejadian Pagi'; 'Kejadian Malam'; 'Intensitas Pagi'; 'Intensitas Malam'};
+comparison_table.Tanpa_SMOTE = [acc1_pagi_baseline; acc1_malam_baseline; acc2_pagi_baseline; acc2_malam_baseline];
+comparison_table.Dengan_SMOTE = [acc1_pagi; acc1_malam; acc2_pagi; acc2_malam];
+comparison_table.Peningkatan = comparison_table.Dengan_SMOTE - comparison_table.Tanpa_SMOTE;
+comparison_table.Peningkatan_Persen = comparison_table.Peningkatan * 100;
+
+writetable(comparison_table, 'Perbandingan_SMOTE_Results.xlsx', 'Sheet', 'Akurasi');
+
+% Tabel distribusi kelas
+distribution_table = table();
+distribution_table.Dataset = {'Kejadian Pagi - Sebelum'; 'Kejadian Pagi - Setelah'; ...
+                             'Kejadian Malam - Sebelum'; 'Kejadian Malam - Setelah'; ...
+                             'Intensitas Pagi - Sebelum'; 'Intensitas Pagi - Setelah'; ...
+                             'Intensitas Malam - Sebelum'; 'Intensitas Malam - Setelah'};
+
+% Hitung total sampel untuk setiap dataset
+total_samples = [sum(counts_pagi_kej); sum(counts_pagi_kej_smote); ...
+                sum(counts_malam_kej); sum(counts_malam_kej_smote); ...
+                sum(counts_pagi_int); sum(counts_pagi_int_smote); ...
+                sum(counts_malam_int); sum(counts_malam_int_smote)];
+
+distribution_table.Total_Sampel = total_samples;
+
+writetable(distribution_table, 'Perbandingan_SMOTE_Results.xlsx', 'Sheet', 'Distribusi');
+
+fprintf('✅ Laporan Excel tersimpan: Perbandingan_SMOTE_Results.xlsx\n');
+
+%% 13. Ringkasan Akhir
+fprintf('\n========== RINGKASAN AKHIR ==========\n');
+fprintf('✅ Training dengan SMOTE selesai!\n\n');
+
+fprintf('📊 HASIL PENINGKATAN:\n');
+if avg_improvement > 0
+    fprintf('   🎉 SMOTE berhasil meningkatkan performa rata-rata +%.2f%%\n', avg_improvement);
+elseif avg_improvement == 0
+    fprintf('   ⚖️ SMOTE tidak memberikan perubahan signifikan\n');
+else
+    fprintf('   ⚠️ SMOTE menurunkan performa rata-rata %.2f%%\n', abs(avg_improvement));
+end
+
+fprintf('\n📁 FILE YANG DIHASILKAN:\n');
+fprintf('   Model dengan SMOTE:\n');
+fprintf('   - model_kejadian_pagi_smote.mat\n');
+fprintf('   - model_kejadian_malam_smote.mat\n');
+fprintf('   - model_intensitas_pagi_smote.mat\n');
+fprintf('   - model_intensitas_malam_smote.mat\n');
+fprintf('\n   Model baseline (tanpa SMOTE):\n');
+fprintf('   - model_kejadian_pagi_baseline.mat\n');
+fprintf('   - model_kejadian_malam_baseline.mat\n');
+fprintf('   - model_intensitas_pagi_baseline.mat\n');
+fprintf('   - model_intensitas_malam_baseline.mat\n');
+fprintf('\n   Data dan hasil:\n');
+fprintf('   - data_smote.mat (data hasil SMOTE)\n');
+fprintf('   - normalisasi_info_smote.mat (parameter normalisasi)\n');
+fprintf('   - comparison_results.mat (hasil perbandingan)\n');
+fprintf('   - Perbandingan_SMOTE_Results.xlsx (laporan Excel)\n');
+
+fprintf('\n🎯 REKOMENDASI:\n');
+if avg_improvement > 5
+    fprintf('   - Gunakan model dengan SMOTE untuk deployment\n');
+    fprintf('   - SMOTE sangat efektif untuk dataset ini\n');
+elseif avg_improvement > 0
+    fprintf('   - SMOTE memberikan peningkatan kecil\n');
+    fprintf('   - Pertimbangkan teknik augmentasi lain\n');
+else
+    fprintf('   - Gunakan model baseline (tanpa SMOTE)\n');
+    fprintf('   - Dataset mungkin sudah cukup seimbang\n');
+end
+
+fprintf('\n⏰ Selesai pada: %s\n', datestr(now));
+fprintf('==========================================\n');
+
+%% ===== FUNGSI GRID SEARCH ANN UNTUK KEJADIAN (ORIGINAL) =====
+function [best_net, best_acc] = gridsearch_kejadian(data, fitur)
+    X = data{:, fitur};
+    y = data.Hujan;  % 0 atau 1
+    Y = full(ind2vec(y' + 1)); % Kelas 0 → indeks 1, kelas 1 → indeks 2
+    
+    neuron_opts = [5 10 15];
+    lr_opts = [0.01 0.05 0.1];
+    best_acc = 0;
+    
+    for h = neuron_opts
+        for lr = lr_opts
+            net = patternnet(h);
+            net.trainFcn = 'trainscg';
+            net.layers{1}.transferFcn = 'tansig';
+            net.layers{2}.transferFcn = 'softmax';
+            net.divideParam.trainRatio = 0.8;
+            net.divideParam.valRatio = 0.2;
+            net.divideParam.testRatio = 0;
+            net.trainParam.lr = lr;
+            net.trainParam.epochs = 1000;
+            net.trainParam.max_fail = 6;
+            net.divideFcn = 'dividetrain'; % Tanpa validasi internal
+            net.trainParam.showWindow = false;
+            
+            net = train(net, X', Y);
+            pred = net(X');
+            [~, pred_class] = max(pred);
+            acc = sum(pred_class' - 1 == y) / numel(y);
+            
+            fprintf('→ Neuron=%d, LR=%.2f, Acc=%.2f%%\n', h, lr, acc * 100);
+            
+            if acc > best_acc
+                best_acc = acc;
+                best_net = net;
+            end
+        end
+    end
+end
+
+%% ===== FUNGSI GRID SEARCH ANN UNTUK INTENSITAS (ORIGINAL) =====
+function [best_net, best_acc] = gridsearch_intensitas(data, fitur)
+    X = data{:, fitur};
+    y = data.IntensitasHujan;  % 1=RA-, 2=RA, 3=RA+, 4=NoRA
+    Y = full(ind2vec(y')); % Format vektor target one-hot
+    
+    neuron_opts = [5 10 15];
+    lr_opts = [0.01 0.05 0.1];
+    best_acc = 0;
+    
+    for h = neuron_opts
+        for lr = lr_opts
+            net = patternnet(h);
+            net.trainFcn = 'trainscg';
+            net.layers{1}.transferFcn = 'tansig';
+            net.layers{2}.transferFcn = 'softmax';
+            net.divideParam.trainRatio = 0.8;
+            net.divideParam.valRatio = 0.2;
+            net.divideParam.testRatio = 0;
+            net.trainParam.lr = lr;
+            net.trainParam.epochs = 1000;
+            net.trainParam.max_fail = 6;
+            net.divideFcn = 'dividetrain'; % Tanpa validasi internal
+            net.trainParam.showWindow = false;
+            
+            net = train(net, X', Y);
+            pred = net(X');
+            [~, pred_class] = max(pred);
+            acc = sum(pred_class' == y) / numel(y);
+            
+            fprintf('→ Neuron=%d, LR=%.2f, Acc=%.2f%%\n', h, lr, acc * 100);
+            
+            if acc > best_acc
+                best_acc = acc;
+                best_net = net;
+            end
+        end
+    end
+end
+
+%% ===== FUNGSI GRID SEARCH ANN UNTUK KEJADIAN DENGAN SMOTE =====
+function [best_net, best_acc] = gridsearch_kejadian_smote(X, y)
+    Y = full(ind2vec(y' + 1)); % Kelas 0 → indeks 1, kelas 1 → indeks 2
+    
+    neuron_opts = [5 10 15 20];  % Tambah opsi neuron karena data lebih banyak
+    lr_opts = [0.01 0.05 0.1];
+    best_acc = 0;
+    
+    fprintf('   Total sampel setelah SMOTE: %d\n', length(y));
+    
+    for h = neuron_opts
+        for lr = lr_opts
+            try
+                net = patternnet(h);
+                net.trainFcn = 'trainscg';
+                net.layers{1}.transferFcn = 'tansig';
+                net.layers{2}.transferFcn = 'softmax';
+                net.divideParam.trainRatio = 0.8;
+                net.divideParam.valRatio = 0.2;
+                net.divideParam.testRatio = 0;
+                net.trainParam.lr = lr;
+                net.trainParam.epochs = 1000;
+                net.trainParam.max_fail = 6;
+                net.divideFcn = 'dividetrain';
+                net.trainParam.showWindow = false;
+                
+                net = train(net, X', Y);
+                pred = net(X');
+                [~, pred_class] = max(pred);
+                acc = sum(pred_class' - 1 == y) / numel(y);
+                
+                fprintf('→ Neuron=%d, LR=%.2f, Acc=%.2f%%\n', h, lr, acc * 100);
+                
+                if acc > best_acc
+                    best_acc = acc;
+                    best_net = net;
+                end
+            catch ME
+                fprintf('❌ Error dengan Neuron=%d, LR=%.2f: %s\n', h, lr, ME.message);
+            end
+        end
+    end
+end
+
+%% ===== FUNGSI GRID SEARCH ANN UNTUK INTENSITAS DENGAN SMOTE =====
+function [best_net, best_acc] = gridsearch_intensitas_smote(X, y)
+    Y = full(ind2vec(y')); % Format vektor target one-hot
+    
+    neuron_opts = [5 10 15 20];  % Tambah opsi neuron karena data lebih banyak
+    lr_opts = [0.01 0.05 0.1];
+    best_acc = 0;
+    
+    fprintf('   Total sampel setelah SMOTE: %d\n', length(y));
+    
+    for h = neuron_opts
+        for lr = lr_opts
+            try
+                net = patternnet(h);
+                net.trainFcn = 'trainscg';
+                net.layers{1}.transferFcn = 'tansig';
+                net.layers{2}.transferFcn = 'softmax';
+                net.divideParam.trainRatio = 0.8;
+                net.divideParam.valRatio = 0.2;
+                net.divideParam.testRatio = 0;
+                net.trainParam.lr = lr;
+                net.trainParam.epochs = 1000;
+                net.trainParam.max_fail = 6;
+                net.divideFcn = 'dividetrain';
+                net.trainParam.showWindow = false;
+                
+                net = train(net, X', Y);
+                pred = net(X');
+                [~, pred_class] = max(pred);
+                acc = sum(pred_class' == y) / numel(y);
+                
+                fprintf('→ Neuron=%d, LR=%.2f, Acc=%.2f%%\n', h, lr, acc * 100);
+                
+                if acc > best_acc
+                    best_acc = acc;
+                    best_net = net;
+                end
+            catch ME
+                fprintf('❌ Error dengan Neuron=%d, LR=%.2f: %s\n', h, lr, ME.message);
+            end
+        end
+    end
+end
+
+
