@@ -1,0 +1,802 @@
+clc; clear;
+
+%% 1. Load Model dan Info Normalisasi
+load model_intensitas_pagi.mat      % net1_pagi
+load model_kejadian_malam.mat     % net1_malam
+load model_intensitas_pagi.mat    % net2_pagi
+load model_intensitas_malam.mat   % net2_malam
+load normalisasi_info.mat         % fitur_kejadian, fitur_intensitas, min_all, max_all
+
+%% 2. Load Data Validasi & Uji
+data_val = readtable('Validasi.xlsx', 'VariableNamingRule', 'preserve');
+data_uji = readtable('Uji.xlsx', 'VariableNamingRule', 'preserve');
+
+% Pastikan kolom Jam numerik
+data_val.Jam = str2double(data_val.Jam);
+data_uji.Jam = str2double(data_uji.Jam);
+
+fprintf('📊 Data dimuat:\n');
+fprintf('   - Data Validasi: %d baris\n', height(data_val));
+fprintf('   - Data Uji: %d baris\n', height(data_uji));
+
+
+%% 4. Normalisasi Data Validasi
+X_kejadian_val = data_val{:, fitur_kejadian};
+X_intensitas_val = data_val{:, fitur_intensitas};
+X_kejadian_norm_val = 2*((X_kejadian_val - min_all(1:7)) ./ (max_all(1:7) - min_all(1:7))) - 1;
+X_intensitas_norm_val = 2*((X_intensitas_val - min_all(5:7)) ./ (max_all(5:7) - min_all(5:7))) - 1;
+
+%% 5. Normalisasi Data Uji
+X_kejadian_uji = data_uji{:, fitur_kejadian};
+X_intensitas_uji = data_uji{:, fitur_intensitas};
+X_kejadian_norm_uji = 2*((X_kejadian_uji - min_all(1:7)) ./ (max_all(1:7) - min_all(1:7))) - 1;
+X_intensitas_norm_uji = 2*((X_intensitas_uji - min_all(5:7)) ./ (max_all(5:7) - min_all(5:7))) - 1;
+
+%% 6. Prediksi Data Validasi
+fprintf('\n🔄 Melakukan prediksi data validasi...\n');
+[pred_kejadian_val, pred_intensitas_val, PoP_val, prob_kejadian_val, prob_intensitas_val] = ...
+    prediksi_hujan(data_val, X_kejadian_norm_val, X_intensitas_norm_val, net1_pagi, net1_malam, net2_pagi, net2_malam);
+
+%% 7. Prediksi Data Uji
+fprintf('🔄 Melakukan prediksi data uji...\n');
+[pred_kejadian_uji, pred_intensitas_uji, PoP_uji, prob_kejadian_uji, prob_intensitas_uji] = ...
+    prediksi_hujan(data_uji, X_kejadian_norm_uji, X_intensitas_norm_uji, net1_pagi, net1_malam, net2_pagi, net2_malam);
+
+%% 8. Simpan Hasil Prediksi
+data_val.Prediksi_Hujan = pred_kejadian_val;
+data_val.Prediksi_Intensitas = pred_intensitas_val;
+data_val.Probabilitas = PoP_val;
+
+data_uji.Prediksi_Hujan = pred_kejadian_uji;
+data_uji.Prediksi_Intensitas = pred_intensitas_uji;
+data_uji.Probabilitas = PoP_uji;
+
+writetable(data_val, 'Hasil_Validasi_PagiMalam.xlsx');
+writetable(data_uji, 'Hasil_Uji_PagiMalam.xlsx');
+
+fprintf('✅ Prediksi selesai dan hasil tersimpan.\n');
+
+
+%% 10. Evaluasi Terpisah
+eval_validasi = evaluasi_model(data_val, pred_kejadian_val, pred_intensitas_val, prob_kejadian_val, prob_intensitas_val, 'VALIDASI');
+eval_uji = evaluasi_model(data_uji, pred_kejadian_uji, pred_intensitas_uji, prob_kejadian_uji, prob_intensitas_uji, 'UJI');
+
+%% 11. Perbandingan Hasil
+fprintf('\n========== PERBANDINGAN HASIL ==========\n');
+fprintf('METRIK                 VALIDASI    UJI\n');
+fprintf('--------------------------------------------\n');
+fprintf('Accuracy Kejadian      %.4f      %.4f\n', eval_validasi.kejadian.accuracy, eval_uji.kejadian.accuracy);
+fprintf('Precision Kejadian     %.4f      %.4f\n', eval_validasi.kejadian.precision, eval_uji.kejadian.precision);
+fprintf('Recall Kejadian        %.4f      %.4f\n', eval_validasi.kejadian.recall, eval_uji.kejadian.recall);
+fprintf('F1-Score Kejadian      %.4f      %.4f\n', eval_validasi.kejadian.f1_score, eval_uji.kejadian.f1_score);
+fprintf('AUC Kejadian           %.4f      %.4f\n', eval_validasi.kejadian.auc, eval_uji.kejadian.auc);
+fprintf('Macro F1 Intensitas    %.4f      %.4f\n', eval_validasi.intensitas.macro_f1, eval_uji.intensitas.macro_f1);
+fprintf('--------------------------------------------\n');
+
+% Analisis overfitting/underfitting
+diff_accuracy = abs(eval_validasi.kejadian.accuracy - eval_uji.kejadian.accuracy);
+diff_f1 = abs(eval_validasi.kejadian.f1_score - eval_uji.kejadian.f1_score);
+
+fprintf('\nANALISIS MODEL:\n');
+if diff_accuracy > 0.05 || diff_f1 > 0.05
+    if eval_validasi.kejadian.accuracy > eval_uji.kejadian.accuracy
+        fprintf('⚠️  Model kemungkinan OVERFITTING (performa validasi > uji)\n');
+    else
+        fprintf('⚠️  Model kemungkinan UNDERFITTING (performa uji > validasi)\n');
+    end
+else
+    fprintf('✅ Model relatif stabil (perbedaan performa < 5%%)\n');
+end
+
+fprintf('Selisih Accuracy: %.4f\n', diff_accuracy);
+fprintf('Selisih F1-Score: %.4f\n', diff_f1);
+
+%% 12. Visualisasi Perbandingan
+% ROC Curves
+figure('Name', 'Perbandingan ROC Curves', 'Position', [100, 100, 1200, 500]);
+
+% Filter data valid untuk plotting
+valid_idx_val = (data_val.Jam == 0) | (data_val.Jam == 12);
+valid_idx_uji = (data_uji.Jam == 0) | (data_uji.Jam == 12);
+
+actual_val = data_val.Hujan(valid_idx_val);
+actual_uji = data_uji.Hujan(valid_idx_uji);
+prob_val = prob_kejadian_val(valid_idx_val);
+prob_uji = prob_kejadian_uji(valid_idx_uji);
+
+subplot(1,2,1);
+try
+    [X_val, Y_val, ~, AUC_val] = perfcurve(actual_val, prob_val, 1);
+    plot(X_val, Y_val, 'b-', 'LineWidth', 2);
+    hold on;
+    plot([0 1], [0 1], 'k--', 'LineWidth', 1);
+    xlabel('False Positive Rate');
+    ylabel('True Positive Rate');
+    title(sprintf('ROC Curve - Validasi (AUC = %.4f)', AUC_val));
+    legend('ROC', 'Random', 'Location', 'southeast');
+    grid on;
+catch
+    text(0.5, 0.5, 'Error plotting ROC', 'HorizontalAlignment', 'center');
+    title('ROC Curve - Validasi (Error)');
+end
+
+subplot(1,2,2);
+try
+    [X_uji, Y_uji, ~, AUC_uji] = perfcurve(actual_uji, prob_uji, 1);
+    plot(X_uji, Y_uji, 'r-', 'LineWidth', 2);
+    hold on;
+    plot([0 1], [0 1], 'k--', 'LineWidth', 1);
+    xlabel('False Positive Rate');
+    ylabel('True Positive Rate');
+    title(sprintf('ROC Curve - Uji (AUC = %.4f)', AUC_uji));
+    legend('ROC', 'Random', 'Location', 'southeast');
+    grid on;
+catch
+    text(0.5, 0.5, 'Error plotting ROC', 'HorizontalAlignment', 'center');
+    title('ROC Curve - Uji (Error)');
+end
+
+% Confusion Matrices
+figure('Name', 'Perbandingan Confusion Matrix', 'Position', [100, 200, 1200, 500]);
+
+subplot(1,2,1);
+pred_val = pred_kejadian_val(valid_idx_val);
+confusionchart(actual_val, pred_val, 'Title', 'Confusion Matrix - Validasi');
+
+subplot(1,2,2);
+pred_uji = pred_kejadian_uji(valid_idx_uji);
+confusionchart(actual_uji, pred_uji, 'Title', 'Confusion Matrix - Uji');
+
+% Bar Chart Perbandingan Metrik
+figure('Name', 'Perbandingan Metrik', 'Position', [100, 300, 800, 600]);
+
+metrik_names = {'Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC'};
+metrik_val = [eval_validasi.kejadian.accuracy, eval_validasi.kejadian.precision, ...
+              eval_validasi.kejadian.recall, eval_validasi.kejadian.f1_score, eval_validasi.kejadian.auc];
+metrik_uji = [eval_uji.kejadian.accuracy, eval_uji.kejadian.precision, ...
+              eval_uji.kejadian.recall, eval_uji.kejadian.f1_score, eval_uji.kejadian.auc];
+
+% Handle NaN values
+metrik_val(isnan(metrik_val)) = 0;
+metrik_uji(isnan(metrik_uji)) = 0;
+
+x = 1:length(metrik_names);
+width = 0.35;
+
+bar(x - width/2, metrik_val, width, 'FaceColor', 'blue', 'FaceAlpha', 0.7);
+hold on;
+bar(x + width/2, metrik_uji, width, 'FaceColor', 'red', 'FaceAlpha', 0.7);
+
+xlabel('Metrik');
+ylabel('Nilai');
+title('Perbandingan Metrik Evaluasi');
+xticks(x);
+xticklabels(metrik_names);
+legend('Validasi', 'Uji', 'Location', 'best');
+grid on;
+
+% Tambahkan nilai di atas bar
+for i = 1:length(metrik_names)
+    text(i - width/2, metrik_val(i) + 0.01, sprintf('%.3f', metrik_val(i)), ...
+         'HorizontalAlignment', 'center', 'FontSize', 8);
+    text(i + width/2, metrik_uji(i) + 0.01, sprintf('%.3f', metrik_uji(i)), ...
+         'HorizontalAlignment', 'center', 'FontSize', 8);
+end
+
+%% 13. Analisis Per Jam
+fprintf('\n========== ANALISIS PER JAM ==========\n');
+
+% Validasi
+fprintf('\nVALIDASI:\n');
+for jam = [00, 12]
+    jam_idx = data_val.Jam == jam;
+    if sum(jam_idx) > 0
+        actual_jam = data_val.Hujan(jam_idx);
+        pred_jam = pred_kejadian_val(jam_idx);
+        acc_jam = sum(actual_jam == pred_jam) / length(actual_jam);
+        hujan_actual = sum(actual_jam);
+        hujan_pred = sum(pred_jam);
+        fprintf('Jam %02d: Acc=%.4f, Hujan Aktual=%d, Hujan Prediksi=%d (%d data)\n', ...
+                jam, acc_jam, hujan_actual, hujan_pred, sum(jam_idx));
+    end
+end
+
+% Uji
+fprintf('\nUJI:\n');
+for jam = [00, 12]
+    jam_idx = data_uji.Jam == jam;
+    if sum(jam_idx) > 0
+        actual_jam = data_uji.Hujan(jam_idx);
+        pred_jam = pred_kejadian_uji(jam_idx);
+        acc_jam = sum(actual_jam == pred_jam) / length(actual_jam);
+        hujan_actual = sum(actual_jam);
+        hujan_pred = sum(pred_jam);
+        fprintf('Jam %02d: Acc=%.4f, Hujan Aktual=%d, Hujan Prediksi=%d (%d data)\n', ...
+                jam, acc_jam, hujan_actual, hujan_pred, sum(jam_idx));
+    end
+end
+
+%% 14. Simpan Hasil Evaluasi
+hasil_evaluasi = struct();
+hasil_evaluasi.validasi = eval_validasi;
+hasil_evaluasi.uji = eval_uji;
+hasil_evaluasi.perbandingan.diff_accuracy = diff_accuracy;
+hasil_evaluasi.perbandingan.diff_f1 = diff_f1;
+hasil_evaluasi.timestamp = datestr(now);
+
+save('hasil_evaluasi_terpisah.mat', 'hasil_evaluasi');
+
+% Simpan ke file Excel
+summary_table = table();
+summary_table.Dataset = {'Validasi'; 'Uji'};
+summary_table.Accuracy = [eval_validasi.kejadian.accuracy; eval_uji.kejadian.accuracy];
+summary_table.Precision = [eval_validasi.kejadian.precision; eval_uji.kejadian.precision];
+summary_table.Recall = [eval_validasi.kejadian.recall; eval_uji.kejadian.recall];
+summary_table.F1_Score = [eval_validasi.kejadian.f1_score; eval_uji.kejadian.f1_score];
+summary_table.AUC = [eval_validasi.kejadian.auc; eval_uji.kejadian.auc];
+summary_table.Macro_F1_Intensitas = [eval_validasi.intensitas.macro_f1; eval_uji.intensitas.macro_f1];
+summary_table.Total_Data = [eval_validasi.total_data; eval_uji.total_data];
+summary_table.Hujan_Aktual = [eval_validasi.total_hujan_aktual; eval_uji.total_hujan_aktual];
+summary_table.Hujan_Prediksi = [eval_validasi.total_hujan_prediksi; eval_uji.total_hujan_prediksi];
+
+writetable(summary_table, 'Ringkasan_Evaluasi_Terpisah.xlsx');
+
+%% 15. Laporan Teks Lengkap
+fid = fopen('Laporan_Evaluasi_Lengkap.txt', 'w');
+fprintf(fid, '========================================\n');
+fprintf(fid, '    LAPORAN EVALUASI MODEL ANN\n');
+fprintf(fid, '========================================\n');
+fprintf(fid, 'Tanggal: %s\n\n', datestr(now));
+
+fprintf(fid, 'RINGKASAN DATA:\n');
+fprintf(fid, '- Data Validasi: %d baris\n', height(data_val));
+fprintf(fid, '- Data Uji: %d baris\n', height(data_uji));
+fprintf(fid, '- Data Valid Validasi: %d (jam 0 & 12)\n', eval_validasi.total_data);
+fprintf(fid, '- Data Valid Uji: %d (jam 0 & 12)\n\n', eval_uji.total_data);
+
+fprintf(fid, 'HASIL EVALUASI KEJADIAN HUJAN:\n');
+fprintf(fid, '=====================================\n');
+fprintf(fid, 'METRIK                 VALIDASI    UJI       SELISIH\n');
+fprintf(fid, '-----------------------------------------------------\n');
+fprintf(fid, 'Accuracy               %.4f      %.4f    %.4f\n', eval_validasi.kejadian.accuracy, eval_uji.kejadian.accuracy, abs(eval_validasi.kejadian.accuracy - eval_uji.kejadian.accuracy));
+fprintf(fid, 'Precision              %.4f      %.4f    %.4f\n', eval_validasi.kejadian.precision, eval_uji.kejadian.precision, abs(eval_validasi.kejadian.precision - eval_uji.kejadian.precision));
+fprintf(fid, 'Recall                 %.4f      %.4f    %.4f\n', eval_validasi.kejadian.recall, eval_uji.kejadian.recall, abs(eval_validasi.kejadian.recall - eval_uji.kejadian.recall));
+fprintf(fid, 'F1-Score               %.4f      %.4f    %.4f\n', eval_validasi.kejadian.f1_score, eval_uji.kejadian.f1_score, abs(eval_validasi.kejadian.f1_score - eval_uji.kejadian.f1_score));
+fprintf(fid, 'AUC                    %.4f      %.4f    %.4f\n', eval_validasi.kejadian.auc, eval_uji.kejadian.auc, abs(eval_validasi.kejadian.auc - eval_uji.kejadian.auc));
+
+fprintf(fid, '\nHASIL EVALUASI INTENSITAS HUJAN:\n');
+fprintf(fid, '=================================\n');
+fprintf(fid, 'Macro F1-Score         %.4f      %.4f    %.4f\n', eval_validasi.intensitas.macro_f1, eval_uji.intensitas.macro_f1, abs(eval_validasi.intensitas.macro_f1 - eval_uji.intensitas.macro_f1));
+
+fprintf(fid, '\nANALISIS MODEL:\n');
+fprintf(fid, '===============\n');
+if diff_accuracy > 0.05 || diff_f1 > 0.05
+    if eval_validasi.kejadian.accuracy > eval_uji.kejadian.accuracy
+        fprintf(fid, 'Status: KEMUNGKINAN OVERFITTING\n');
+        fprintf(fid, 'Alasan: Performa validasi lebih baik dari uji\n');
+    else
+        fprintf(fid, 'Status: KEMUNGKINAN UNDERFITTING\n');
+        fprintf(fid, 'Alasan: Performa uji lebih baik dari validasi\n');
+    end
+else
+    fprintf(fid, 'Status: MODEL STABIL\n');
+    fprintf(fid, 'Alasan: Perbedaan performa < 5%%\n');
+end
+
+fprintf(fid, '\nREKOMENDASI:\n');
+fprintf(fid, '============\n');
+if diff_accuracy > 0.1
+        fprintf(fid, '1. Pertimbangkan regularisasi atau dropout\n');
+    fprintf(fid, '2. Kurangi kompleksitas model (hidden units)\n');
+    fprintf(fid, '3. Tambah data training atau augmentasi data\n');
+elseif eval_validasi.kejadian.accuracy < 0.7 && eval_uji.kejadian.accuracy < 0.7
+    fprintf(fid, '1. Tingkatkan kompleksitas model\n');
+    fprintf(fid, '2. Feature engineering lebih lanjut\n');
+    fprintf(fid, '3. Hyperparameter tuning\n');
+else
+    fprintf(fid, '1. Model sudah cukup baik\n');
+    fprintf(fid, '2. Pertimbangkan ensemble methods untuk peningkatan\n');
+    fprintf(fid, '3. Monitor performa secara berkala\n');
+end
+
+fprintf(fid, '\nCONFUSION MATRIX VALIDASI:\n');
+fprintf(fid, '==========================\n');
+fprintf(fid, '                 Prediksi\n');
+fprintf(fid, 'Aktual    Tidak Hujan  Hujan\n');
+fprintf(fid, 'Tidak Hujan    %4d     %4d\n', eval_validasi.kejadian.confusion_matrix(1,1), eval_validasi.kejadian.confusion_matrix(1,2));
+fprintf(fid, 'Hujan          %4d     %4d\n', eval_validasi.kejadian.confusion_matrix(2,1), eval_validasi.kejadian.confusion_matrix(2,2));
+
+fprintf(fid, '\nCONFUSION MATRIX UJI:\n');
+fprintf(fid, '=====================\n');
+fprintf(fid, '                 Prediksi\n');
+fprintf(fid, 'Aktual    Tidak Hujan  Hujan\n');
+fprintf(fid, 'Tidak Hujan    %4d     %4d\n', eval_uji.kejadian.confusion_matrix(1,1), eval_uji.kejadian.confusion_matrix(1,2));
+fprintf(fid, 'Hujan          %4d     %4d\n', eval_uji.kejadian.confusion_matrix(2,1), eval_uji.kejadian.confusion_matrix(2,2));
+
+fclose(fid);
+
+%% 16. Analisis Distribusi Error
+fprintf('\n========== ANALISIS DISTRIBUSI ERROR ==========\n');
+
+% Hitung error rate per dataset
+error_rate_val = 1 - eval_validasi.kejadian.accuracy;
+error_rate_uji = 1 - eval_uji.kejadian.accuracy;
+
+fprintf('Error Rate Validasi: %.4f (%.1f%%)\n', error_rate_val, error_rate_val*100);
+fprintf('Error Rate Uji:      %.4f (%.1f%%)\n', error_rate_uji, error_rate_uji*100);
+
+% Analisis False Positive dan False Negative
+FP_val = eval_validasi.kejadian.confusion_matrix(1,2);
+FN_val = eval_validasi.kejadian.confusion_matrix(2,1);
+FP_uji = eval_uji.kejadian.confusion_matrix(1,2);
+FN_uji = eval_uji.kejadian.confusion_matrix(2,1);
+
+fprintf('\nAnalisis Error Type:\n');
+fprintf('VALIDASI - False Positive: %d, False Negative: %d\n', FP_val, FN_val);
+fprintf('UJI      - False Positive: %d, False Negative: %d\n', FP_uji, FN_uji);
+
+if FP_val > FN_val && FP_uji > FN_uji
+    fprintf('Model cenderung OVER-PREDICT hujan (lebih banyak FP)\n');
+elseif FN_val > FP_val && FN_uji > FP_uji
+    fprintf('Model cenderung UNDER-PREDICT hujan (lebih banyak FN)\n');
+else
+    fprintf('Model memiliki distribusi error yang bervariasi\n');
+end
+
+%% 17. Visualisasi Distribusi Probabilitas
+figure('Name', 'Distribusi Probabilitas', 'Position', [100, 400, 1200, 800]);
+
+% Subplot 1: Distribusi probabilitas validasi
+subplot(2,2,1);
+prob_no_rain_val = prob_val(actual_val == 0);
+prob_rain_val = prob_val(actual_val == 1);
+
+if ~isempty(prob_no_rain_val)
+    histogram(prob_no_rain_val, 20, 'FaceAlpha', 0.7, 'FaceColor', 'blue', 'EdgeColor', 'black');
+end
+title('Validasi - Distribusi Prob. (Tidak Hujan Aktual)');
+xlabel('Probabilitas Prediksi Hujan');
+ylabel('Frekuensi');
+grid on;
+
+subplot(2,2,2);
+if ~isempty(prob_rain_val)
+    histogram(prob_rain_val, 20, 'FaceAlpha', 0.7, 'FaceColor', 'red', 'EdgeColor', 'black');
+end
+title('Validasi - Distribusi Prob. (Hujan Aktual)');
+xlabel('Probabilitas Prediksi Hujan');
+ylabel('Frekuensi');
+grid on;
+
+% Subplot 3: Distribusi probabilitas uji
+subplot(2,2,3);
+prob_no_rain_uji = prob_uji(actual_uji == 0);
+prob_rain_uji = prob_uji(actual_uji == 1);
+
+if ~isempty(prob_no_rain_uji)
+    histogram(prob_no_rain_uji, 20, 'FaceAlpha', 0.7, 'FaceColor', 'blue', 'EdgeColor', 'black');
+end
+title('Uji - Distribusi Prob. (Tidak Hujan Aktual)');
+xlabel('Probabilitas Prediksi Hujan');
+ylabel('Frekuensi');
+grid on;
+
+subplot(2,2,4);
+if ~isempty(prob_rain_uji)
+    histogram(prob_rain_uji, 20, 'FaceAlpha', 0.7, 'FaceColor', 'red', 'EdgeColor', 'black');
+end
+title('Uji - Distribusi Prob. (Hujan Aktual)');
+xlabel('Probabilitas Prediksi Hujan');
+ylabel('Frekuensi');
+grid on;
+
+%% 18. Time Series Comparison (Sample)
+figure('Name', 'Time Series Comparison', 'Position', [100, 500, 1200, 600]);
+
+% Sample data untuk visualisasi (maksimal 50 data)
+sample_size_val = min(50, sum(valid_idx_val));
+sample_size_uji = min(50, sum(valid_idx_uji));
+
+subplot(2,1,1);
+if sample_size_val > 0
+    x_val = 1:sample_size_val;
+    plot(x_val, actual_val(1:sample_size_val), 'bo-', 'LineWidth', 1.5, 'MarkerSize', 6);
+    hold on;
+    plot(x_val, pred_val(1:sample_size_val), 'ro-', 'LineWidth', 1.5, 'MarkerSize', 6);
+    xlabel('Index Data');
+    ylabel('Kejadian Hujan');
+    title('Time Series Validasi - Prediksi vs Aktual');
+    legend('Aktual', 'Prediksi', 'Location', 'best');
+    grid on;
+    ylim([-0.1, 1.1]);
+end
+
+subplot(2,1,2);
+if sample_size_uji > 0
+    x_uji = 1:sample_size_uji;
+    plot(x_uji, actual_uji(1:sample_size_uji), 'bo-', 'LineWidth', 1.5, 'MarkerSize', 6);
+    hold on;
+    plot(x_uji, pred_uji(1:sample_size_uji), 'ro-', 'LineWidth', 1.5, 'MarkerSize', 6);
+    xlabel('Index Data');
+    ylabel('Kejadian Hujan');
+    title('Time Series Uji - Prediksi vs Aktual');
+    legend('Aktual', 'Prediksi', 'Location', 'best');
+    grid on;
+    ylim([-0.1, 1.1]);
+end
+
+%% 19. Reliability Diagram (Calibration Plot)
+figure('Name', 'Reliability Diagram', 'Position', [100, 600, 1200, 500]);
+
+subplot(1,2,1);
+try
+    % Binning probabilitas untuk reliability diagram
+    n_bins = 10;
+    bin_edges = linspace(0, 1, n_bins+1);
+    bin_centers = (bin_edges(1:end-1) + bin_edges(2:end)) / 2;
+    
+    observed_freq_val = zeros(n_bins, 1);
+    predicted_freq_val = zeros(n_bins, 1);
+    bin_counts_val = zeros(n_bins, 1);
+    
+    for i = 1:n_bins
+        bin_mask = (prob_val >= bin_edges(i)) & (prob_val < bin_edges(i+1));
+        if i == n_bins  % Include upper bound for last bin
+            bin_mask = (prob_val >= bin_edges(i)) & (prob_val <= bin_edges(i+1));
+        end
+        
+        if sum(bin_mask) > 0
+            observed_freq_val(i) = mean(actual_val(bin_mask));
+            predicted_freq_val(i) = mean(prob_val(bin_mask));
+            bin_counts_val(i) = sum(bin_mask);
+        end
+    end
+    
+    % Plot reliability diagram
+    valid_bins = bin_counts_val > 0;
+    scatter(predicted_freq_val(valid_bins), observed_freq_val(valid_bins), ...
+            bin_counts_val(valid_bins)*10, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot([0 1], [0 1], 'k--', 'LineWidth', 2);
+    xlabel('Mean Predicted Probability');
+    ylabel('Observed Frequency');
+    title('Reliability Diagram - Validasi');
+    grid on;
+    axis([0 1 0 1]);
+    
+    % Add bin counts as text
+    for i = find(valid_bins)'
+        text(predicted_freq_val(i), observed_freq_val(i), ...
+             sprintf('%d', bin_counts_val(i)), 'HorizontalAlignment', 'center');
+    end
+    
+catch ME
+    text(0.5, 0.5, sprintf('Error: %s', ME.message), 'HorizontalAlignment', 'center');
+    title('Reliability Diagram - Validasi (Error)');
+end
+
+subplot(1,2,2);
+try
+    observed_freq_uji = zeros(n_bins, 1);
+    predicted_freq_uji = zeros(n_bins, 1);
+    bin_counts_uji = zeros(n_bins, 1);
+    
+    for i = 1:n_bins
+        bin_mask = (prob_uji >= bin_edges(i)) & (prob_uji < bin_edges(i+1));
+        if i == n_bins
+            bin_mask = (prob_uji >= bin_edges(i)) & (prob_uji <= bin_edges(i+1));
+        end
+        
+        if sum(bin_mask) > 0
+            observed_freq_uji(i) = mean(actual_uji(bin_mask));
+            predicted_freq_uji(i) = mean(prob_uji(bin_mask));
+            bin_counts_uji(i) = sum(bin_mask);
+        end
+    end
+    
+    valid_bins = bin_counts_uji > 0;
+    scatter(predicted_freq_uji(valid_bins), observed_freq_uji(valid_bins), ...
+            bin_counts_uji(valid_bins)*10, 'filled', 'MarkerFaceAlpha', 0.7);
+    hold on;
+    plot([0 1], [0 1], 'k--', 'LineWidth', 2);
+    xlabel('Mean Predicted Probability');
+    ylabel('Observed Frequency');
+    title('Reliability Diagram - Uji');
+    grid on;
+    axis([0 1 0 1]);
+    
+    for i = find(valid_bins)'
+        text(predicted_freq_uji(i), observed_freq_uji(i), ...
+             sprintf('%d', bin_counts_uji(i)), 'HorizontalAlignment', 'center');
+    end
+    
+catch ME
+    text(0.5, 0.5, sprintf('Error: %s', ME.message), 'HorizontalAlignment', 'center');
+    title('Reliability Diagram - Uji (Error)');
+end
+
+%% 20. Final Summary
+fprintf('\n========== RINGKASAN AKHIR ==========\n');
+fprintf('✅ Evaluasi model selesai dengan dataset terpisah\n');
+fprintf('\n📁 File yang dihasilkan:\n');
+fprintf('   - Hasil_Validasi_PagiMalam.xlsx (prediksi validasi)\n');
+fprintf('   - Hasil_Uji_PagiMalam.xlsx (prediksi uji)\n');
+fprintf('   - hasil_evaluasi_terpisah.mat (hasil evaluasi lengkap)\n');
+fprintf('   - Ringkasan_Evaluasi_Terpisah.xlsx (tabel perbandingan)\n');
+fprintf('   - Laporan_Evaluasi_Lengkap.txt (laporan detail)\n');
+
+fprintf('\n📊 Grafik yang dihasilkan:\n');
+fprintf('   - Perbandingan ROC Curves\n');
+fprintf('   - Perbandingan Confusion Matrix\n');
+fprintf('   - Bar Chart Metrik\n');
+fprintf('   - Distribusi Probabilitas\n');
+fprintf('   - Time Series Comparison\n');
+fprintf('   - Reliability Diagram\n');
+
+fprintf('\n🎯 Kesimpulan Utama:\n');
+if eval_uji.kejadian.accuracy >= 0.8
+    fprintf('   - Model memiliki performa BAIK (Accuracy ≥ 80%%)\n');
+elseif eval_uji.kejadian.accuracy >= 0.7
+    fprintf('   - Model memiliki performa CUKUP (Accuracy ≥ 70%%)\n');
+else
+    fprintf('   - Model memiliki performa KURANG (Accuracy < 70%%)\n');
+end
+
+if diff_accuracy <= 0.05
+    fprintf('   - Model STABIL (selisih accuracy ≤ 5%%)\n');
+else
+    fprintf('   - Model TIDAK STABIL (selisih accuracy > 5%%)\n');
+end
+
+fprintf('\n💡 Rekomendasi:\n');
+if eval_uji.kejadian.accuracy < 0.7
+    fprintf('   - Pertimbangkan perbaikan arsitektur model\n');
+        fprintf('   - Lakukan feature engineering lebih lanjut\n');
+    fprintf('   - Tambah data training atau data augmentation\n');
+elseif diff_accuracy > 0.1
+    fprintf('   - Implementasikan regularisasi untuk mengurangi overfitting\n');
+    fprintf('   - Pertimbangkan cross-validation yang lebih robust\n');
+else
+    fprintf('   - Model sudah cukup baik untuk deployment\n');
+    fprintf('   - Monitor performa secara berkala\n');
+end
+
+fprintf('\n🔍 Detail Performa:\n');
+fprintf('   - Best Accuracy: %.4f (%s)\n', max(eval_validasi.kejadian.accuracy, eval_uji.kejadian.accuracy), ...
+        ternary(eval_validasi.kejadian.accuracy > eval_uji.kejadian.accuracy, 'Validasi', 'Uji'));
+fprintf('   - Best F1-Score: %.4f (%s)\n', max(eval_validasi.kejadian.f1_score, eval_uji.kejadian.f1_score), ...
+        ternary(eval_validasi.kejadian.f1_score > eval_uji.kejadian.f1_score, 'Validasi', 'Uji'));
+fprintf('   - Best AUC: %.4f (%s)\n', max(eval_validasi.kejadian.auc, eval_uji.kejadian.auc), ...
+        ternary(eval_validasi.kejadian.auc > eval_uji.kejadian.auc, 'Validasi', 'Uji'));
+
+fprintf('\n========================================\n');
+fprintf('Evaluasi selesai pada: %s\n', datestr(now));
+fprintf('========================================\n');
+
+%% Helper function untuk ternary operator
+function result = ternary(condition, true_val, false_val)
+    if condition
+        result = true_val;
+    else
+        result = false_val;
+    end
+end
+%% 3. Fungsi Prediksi
+function [pred_kejadian, pred_intensitas, PoP, prob_kejadian, prob_intensitas] = prediksi_hujan(data, X_kejadian_norm, X_intensitas_norm, net1_pagi, net1_malam, net2_pagi, net2_malam)
+    n = height(data);
+    pred_kejadian = zeros(n,1);
+    pred_intensitas = strings(n,1);
+    PoP = zeros(n,1);
+    prob_kejadian = zeros(n,1);
+    prob_intensitas = zeros(n,3);
+    
+    for i = 1:n
+        jam = data.Jam(i);
+        Xk = X_kejadian_norm(i,:)';
+        Xi = X_intensitas_norm(i,:)';
+        
+        % Skip jika bukan jam 0 atau 12
+        if jam ~= 0 && jam ~= 12
+            pred_intensitas(i) = "NoRA";
+            continue;
+        end
+        
+        % Pilih model kejadian sesuai jam
+        if jam == 0
+            out1 = sim(net1_pagi, Xk);
+        else % jam == 12
+            out1 = sim(net1_malam, Xk);
+        end
+        
+        kelas_k = vec2ind(out1) - 1;
+        pred_kejadian(i) = kelas_k;
+        
+        % Probabilitas kejadian hujan
+        if length(out1) >= 2
+            prob_kejadian(i) = out1(2);
+        else
+            prob_kejadian(i) = out1(1);
+        end
+        
+        % Jika hujan, prediksi intensitas dengan 10x simulasi
+        if kelas_k == 1
+            pop_sum = zeros(3,1);
+            for j = 1:10
+                if jam == 0
+                    out2 = sim(net2_pagi, Xi);
+                else
+                    out2 = sim(net2_malam, Xi);
+                end
+                pop_sum = pop_sum + out2(:);
+            end
+            avg_out2 = pop_sum / 10;
+            prob_intensitas(i,:) = avg_out2';
+            
+            [prob, kelas_i] = max(avg_out2);
+            switch kelas_i
+                case 1
+                    pred_intensitas(i) = "-RA";
+                case 2
+                    pred_intensitas(i) = "RA";
+                case 3
+                    pred_intensitas(i) = "+RA";
+            end
+            PoP(i) = prob;
+        else
+            pred_intensitas(i) = "NoRA";
+            PoP(i) = 0;
+            prob_intensitas(i,:) = [0, 0, 0];
+        end
+    end
+end
+
+%% 9. Fungsi Evaluasi
+function hasil_eval = evaluasi_model(data, pred_kejadian, pred_intensitas, prob_kejadian, prob_intensitas, nama_dataset)
+    fprintf('\n========== EVALUASI %s ==========\n', upper(nama_dataset));
+    
+    % Ambil data aktual
+    actual_kejadian = data.Hujan;
+    actual_intensitas = data.IntensitasHujan;
+    
+    % Filter data valid (jam 0 atau 12)
+    valid_idx = (data.Jam == 0) | (data.Jam == 12);
+    actual_kejadian = actual_kejadian(valid_idx);
+    actual_intensitas = actual_intensitas(valid_idx);
+    pred_kejadian = pred_kejadian(valid_idx);
+    pred_intensitas = pred_intensitas(valid_idx);
+    prob_kejadian = prob_kejadian(valid_idx);
+    prob_intensitas = prob_intensitas(valid_idx,:);
+    
+    fprintf('📊 Data valid untuk evaluasi: %d\n', sum(valid_idx));
+    
+    %% Evaluasi Kejadian Hujan
+    fprintf('\n--- KEJADIAN HUJAN ---\n');
+    
+    cm_kejadian = confusionmat(actual_kejadian, pred_kejadian);
+    fprintf('Confusion Matrix:\n');
+    fprintf('                 Prediksi\n');
+    fprintf('Aktual    Tidak Hujan  Hujan\n');
+    fprintf('Tidak Hujan    %4d     %4d\n', cm_kejadian(1,1), cm_kejadian(1,2));
+    fprintf('Hujan          %4d     %4d\n', cm_kejadian(2,1), cm_kejadian(2,2));
+    
+    % Hitung metrik
+    TP = cm_kejadian(2,2); TN = cm_kejadian(1,1);
+    FP = cm_kejadian(1,2); FN = cm_kejadian(2,1);
+    
+    accuracy = (TP + TN) / (TP + TN + FP + FN);
+    precision = TP / (TP + FP + eps);
+    recall = TP / (TP + FN + eps);
+    f1_score = 2 * (precision * recall) / (precision + recall + eps);
+    
+    fprintf('\nMetrik:\n');
+    fprintf('Accuracy:  %.4f\n', accuracy);
+    fprintf('Precision: %.4f\n', precision);
+    fprintf('Recall:    %.4f\n', recall);
+    fprintf('F1-Score:  %.4f\n', f1_score);
+    
+    % AUC
+    try
+        [~, ~, ~, AUC] = perfcurve(actual_kejadian, prob_kejadian, 1);
+        fprintf('AUC:       %.4f\n', AUC);
+    catch
+        AUC = NaN;
+        fprintf('AUC:       Error\n');
+    end
+    
+    %% Evaluasi Intensitas Hujan
+    fprintf('\n--- INTENSITAS HUJAN ---\n');
+    
+    hujan_idx = actual_kejadian == 1;
+    if sum(hujan_idx) > 0
+        actual_int = actual_intensitas(hujan_idx);
+        pred_int = pred_intensitas(hujan_idx);
+        prob_int = prob_intensitas(hujan_idx,:);
+        
+        % Konversi ke string jika perlu
+        if iscell(actual_int)
+            actual_int = string(actual_int);
+        end
+        if iscell(pred_int)
+            pred_int = string(pred_int);
+        end
+        
+        % Confusion matrix intensitas
+        try
+            [unique_classes, ~, actual_int_num] = unique(actual_int);
+            if ~iscell(unique_classes)
+                unique_classes = cellstr(string(unique_classes));
+            end
+            
+            pred_int_num = zeros(size(pred_int));
+            for i = 1:length(pred_int)
+                for j = 1:length(unique_classes)
+                    if strcmp(string(pred_int(i)), string(unique_classes{j}))
+                        pred_int_num(i) = j;
+                        break;
+                    end
+                end
+                if pred_int_num(i) == 0
+                    pred_int_num(i) = 1;
+                end
+            end
+            
+            cm_intensitas = confusionmat(actual_int_num, pred_int_num);
+            
+            fprintf('Confusion Matrix Intensitas:\n');
+            fprintf('Kelas: ');
+            for i = 1:length(unique_classes)
+                fprintf('%8s', string(unique_classes{i}));
+            end
+            fprintf('\n');
+            
+            for i = 1:size(cm_intensitas,1)
+                fprintf('%-8s', string(unique_classes{i}));
+                for j = 1:size(cm_intensitas,2)
+                    fprintf('%8d', cm_intensitas(i,j));
+                end
+                fprintf('\n');
+            end
+            
+            % F1-Score per kelas
+            f1_scores = zeros(length(unique_classes),1);
+            for i = 1:length(unique_classes)
+                if i <= size(cm_intensitas,1) && i <= size(cm_intensitas,2)
+                    TP_i = cm_intensitas(i,i);
+                    FP_i = sum(cm_intensitas(:,i)) - TP_i;
+                    FN_i = sum(cm_intensitas(i,:)) - TP_i;
+                    
+                    if (TP_i + FP_i) > 0 && (TP_i + FN_i) > 0
+                        prec_i = TP_i / (TP_i + FP_i);
+                        rec_i = TP_i / (TP_i + FN_i);
+                        f1_scores(i) = 2 * (prec_i * rec_i) / (prec_i + rec_i);
+                    end
+                end
+            end
+            
+            macro_f1 = mean(f1_scores);
+            fprintf('\nMacro F1-Score: %.4f\n', macro_f1);
+            
+        catch ME
+            fprintf('Error evaluasi intensitas: %s\n', ME.message);
+            macro_f1 = NaN;
+        end
+    else
+        fprintf('Tidak ada data hujan untuk evaluasi intensitas.\n');
+        macro_f1 = NaN;
+    end
+    
+    %% Simpan hasil evaluasi
+    hasil_eval = struct();
+    hasil_eval.dataset = nama_dataset;
+    hasil_eval.kejadian.accuracy = accuracy;
+    hasil_eval.kejadian.precision = precision;
+    hasil_eval.kejadian.recall = recall;
+    hasil_eval.kejadian.f1_score = f1_score;
+    hasil_eval.kejadian.auc = AUC;
+    hasil_eval.kejadian.confusion_matrix = cm_kejadian;
+    hasil_eval.intensitas.macro_f1 = macro_f1;
+    hasil_eval.total_data = sum(valid_idx);
+    hasil_eval.total_hujan_aktual = sum(actual_kejadian);
+    hasil_eval.total_hujan_prediksi = sum(pred_kejadian);
+end
+
